@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Market Research - 多平台同款竞品识别",
+  "version": "0.4.0",
+  "description": "采集多个欧洲电商搜索结果，按图片逐个比对识别同款竞品，并导出 XLSX。",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting",
+    "sidePanel",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.ebay.de/*",
+    "https://*.ebay.com/*",
+    "https://*.ebayimg.com/*",
+    "https://*.ebaystatic.com/*",
+    "https://*.otto.de/*",
+    "https://*.kaufland.de/*",
+    "https://*.real.de/*",
+    "https://*.manomano.de/*",
+    "https://*.manomano.fr/*",
+    "https://*.leroymerlin.fr/*",
+    "https://*.cdiscount.com/*",
+    "https://*.bol.com/*",
+    "https://api.openai.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "action": {
+    "default_title": "市场调研（打开侧边栏）"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.ebay.de/*",
+        "https://*.ebay.com/*",
+        "https://*.otto.de/*",
+        "https://*.kaufland.de/*",
+        "https://*.real.de/*",
+        "https://*.manomano.de/*",
+        "https://*.manomano.fr/*",
+        "https://*.leroymerlin.fr/*",
+        "https://*.cdiscount.com/*",
+        "https://*.bol.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

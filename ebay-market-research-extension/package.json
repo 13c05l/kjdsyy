@@ -1,0 +1,9 @@
+{
+  "name": "ebay-market-research-extension",
+  "private": true,
+  "type": "module",
+  "description": "Chrome 扩展；package.json 仅用于让 node 以 ESM 方式运行 verify.mjs，扩展本身不依赖它。",
+  "scripts": {
+    "verify": "node verify.mjs"
+  }
+}

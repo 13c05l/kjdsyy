@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>跨境运营工作台</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <h1>跨境运营工作台</h1>
+        <p id="pageState">等待支持的电商搜索结果页</p>
+      </div>
+      <span class="version-mark">v0.4</span>
+    </header>
+
+    <nav class="main-nav" aria-label="功能页面">
+      <button class="nav-button active" type="button" data-page-target="dashboard">工作台</button>
+      <button class="nav-button" type="button" data-page-target="research">市场调研</button>
+      <button class="nav-button" type="button" data-page-target="templates">模板制作</button>
+      <button class="nav-button" type="button" data-page-target="settings">设置</button>
+    </nav>
+
+    <div id="status" class="status" role="status"></div>
+
+    <section class="page active" data-page="dashboard">
+      <section class="page-intro">
+        <div>
+          <p class="eyebrow">WORKSPACE</p>
+          <h2>今天要做什么？</h2>
+          <p class="page-copy">从市场调研开始，整理竞品和价格，再进入模板制作。</p>
+        </div>
+        <button class="primary page-action" type="button" data-go-page="research">开始市场调研</button>
+      </section>
+
+      <section class="panel workflow-panel">
+        <div class="section-title">工作流进度</div>
+        <div class="workflow-list">
+          <button class="workflow-step current" type="button" data-go-page="research">
+            <span class="step-number">1</span>
+            <span><b>市场调研</b><small>采集平台第一页竞品、价格和识别结果</small></span>
+            <span class="step-state">进行中</span>
+          </button>
+          <button class="workflow-step" type="button" data-go-page="templates">
+            <span class="step-number">2</span>
+            <span><b>模板制作</b><small>选择平台并生成对应上架文件</small></span>
+            <span class="step-state">待开始</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="dashboard-grid">
+        <section class="panel compact-panel">
+          <div class="section-title">当前任务</div>
+          <div id="dashboardTask" class="metric-empty">还没有开始任务</div>
+        </section>
+        <section class="panel compact-panel">
+          <div class="section-title">已支持平台</div>
+          <div class="platform-count">8 <span>个平台</span></div>
+          <div class="hint">eBay、OTTO、REAL、ManoMano、Leroy Merlin、Cdiscount、bol.com</div>
+        </section>
+      </section>
+    </section>
+
+    <section class="page" data-page="research" hidden>
+      <section class="page-heading">
+        <div>
+          <p class="eyebrow">MARKET RESEARCH</p>
+          <h2>市场调研</h2>
+        </div>
+        <span class="page-badge">当前页面</span>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">参考产品图片</div>
+        <div class="reference">
+          <div class="reference-preview" id="referencePreview">
+            <span class="reference-placeholder">未选择</span>
+          </div>
+          <div class="reference-actions">
+            <input id="referenceImage" type="file" accept="image/*" hidden>
+            <button id="pickReference" type="button">选择图片</button>
+            <button id="clearReference" type="button" hidden>移除</button>
+            <div class="hint">上传后按同款相似度排序；不上传时按页面顺序导出。</div>
+          </div>
+        </div>
+        <div class="reference-fields">
+          <label>
+            参考商品标题
+            <input id="referenceTitle" type="text" placeholder="粘贴参考商品标题，可提高不同角度图片的识别率">
+          </label>
+          <label>
+            关键词
+            <input id="referenceKeywords" type="text" placeholder="如：wireless charger, 15W, black">
+          </label>
+        </div>
+        <div class="hint">最终综合分：本地粗筛 40% + 视觉模型 60%；标题和关键词用于辅助判断。</div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">识别参数</div>
+        <div class="row two">
+          <label>
+            粗筛强度
+            <select id="filterLevel">
+              <option value="strict">严格（送模型最少）</option>
+              <option value="medium">适中</option>
+              <option value="loose">宽松</option>
+              <option value="off" selected>全量（全部送模型）</option>
+            </select>
+          </label>
+          <label>
+            并发数
+            <select id="concurrency">
+              <option value="3">3</option>
+              <option value="4" selected>4（推荐）</option>
+              <option value="5">5</option>
+              <option value="8">8</option>
+              <option value="10">10</option>
+            </select>
+          </label>
+        </div>
+        <label class="checkbox">
+          <input id="useVision" type="checkbox" checked>
+          使用视觉模型逐个比对（关闭则只做本地粗筛）
+        </label>
+        <label class="checkbox">
+          <input id="autoRetry" type="checkbox" checked>
+          自动重试接口失败
+          <input id="retryCount" class="retry-count" type="number" min="0" max="10" step="1" value="2" aria-label="自动重试次数">
+          <span>次</span>
+        </label>
+        <label class="checkbox">
+          <input id="useDetails" type="checkbox">
+          读取非高度相似候选详情，增强功能识别
+        </label>
+      </section>
+
+      <div class="actions">
+        <button id="analyze" class="primary">采集并分析</button>
+        <button id="stop" hidden>停止</button>
+        <button id="retryFailed" disabled>重试失败项</button>
+        <button id="export" disabled>导出 XLSX</button>
+      </div>
+
+      <div id="progress" class="progress" hidden>
+        <div class="progress-text"><span id="progressLabel"></span></div>
+        <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+      </div>
+
+      <section id="summary" class="summary" hidden></section>
+      <section id="results" class="results"></section>
+    </section>
+
+    <section class="page" data-page="templates" hidden>
+      <section class="page-heading">
+        <div>
+          <p class="eyebrow">LISTING WORKFLOW</p>
+          <h2>模板制作</h2>
+        </div>
+        <span class="page-badge">初版入口</span>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">选择要制作的平台</div>
+        <div class="platform-grid" role="group" aria-label="上架平台">
+          <button class="platform-button selected" type="button" data-template-platform="otto"><b>OTTO</b><small>德国上架模板</small></button>
+          <button class="platform-button" type="button" data-template-platform="real-vk"><b>REAL / VK</b><small>德国上架模板</small></button>
+          <button class="platform-button" type="button" data-template-platform="cd-lml-but"><b>CD / LML / But</b><small>法意西葡模板</small></button>
+          <button class="platform-button" type="button" data-template-platform="shein"><b>SHEIN</b><small>DGI 批量上传</small></button>
+          <button class="platform-button" type="button" data-template-platform="tk"><b>TK</b><small>批量上传模板</small></button>
+        </div>
+      </section>
+
+      <section class="panel template-task-panel">
+        <div class="section-title">生成上架文件</div>
+        <div class="template-status">
+          <div class="template-icon">01</div>
+          <div>
+            <b id="templatePlatformLabel">OTTO</b>
+            <p>初版会读取产品资料、市场调研结果和商家规则，生成对应模板。</p>
+          </div>
+        </div>
+        <div class="hint">图片字段暂不处理；SKU、分类和商家固定值先按规则填写，不确定内容会列入待确认清单。</div>
+        <button id="generateTemplate" class="primary full-button" type="button">生成上架文件</button>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">任务输入</div>
+        <div class="input-status-row"><span>产品资料</span><span class="input-row-actions"><span id="productDataStatus" class="status-chip pending">未导入</span><button id="openProductImport" class="text-button" type="button">导入</button></span></div>
+        <div class="input-status-row"><span>市场调研结果</span><span class="input-row-actions"><span id="researchDataStatus" class="status-chip pending">暂无结果</span><button id="openResearchView" class="text-button" type="button">查看</button></span></div>
+        <div class="input-status-row"><span>商家模板规则</span><span class="status-chip pending">在设置中配置</span></div>
+      </section>
+    </section>
+
+    <section class="page" data-page="product-data" data-page-parent="templates" hidden>
+      <section class="page-heading">
+        <div>
+          <button class="back-button" type="button" data-go-page="templates">返回模板制作</button>
+          <p class="eyebrow">PRODUCT DATA</p>
+          <h2>产品资料</h2>
+          <p class="page-copy">导入产品资料后，模板制作会读取 SKU、成本、库存、尺寸、重量和变体。</p>
+        </div>
+        <span id="productImportBadge" class="page-badge">未导入</span>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">导入产品资料</div>
+        <input id="productDataFile" type="file" accept=".xlsx,.csv,.tsv,.json,application/json,text/csv" hidden>
+        <button id="chooseProductData" class="primary full-button" type="button">选择产品资料文件</button>
+        <div class="hint">支持 XLSX、CSV、TSV、JSON。第一行作为字段名；图片字段暂不处理。</div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">当前资料</div>
+        <div id="productImportSummary" class="import-summary">尚未导入产品资料</div>
+        <div id="productPreview" class="product-preview"></div>
+      </section>
+    </section>
+
+    <section class="page" data-page="research-view" data-page-parent="templates" hidden>
+      <section class="page-heading">
+        <div>
+          <button class="back-button" type="button" data-go-page="templates">返回模板制作</button>
+          <p class="eyebrow">RESEARCH RESULTS</p>
+          <h2>市场调研结果</h2>
+          <p id="researchViewSubtitle" class="page-copy">查看当前已采集的竞品数据。</p>
+        </div>
+        <button id="researchViewExport" class="text-button" type="button">导出 XLSX</button>
+      </section>
+
+      <section class="research-view-tools">
+        <div id="researchStats" class="research-stats">暂无调研结果</div>
+        <input id="researchFilter" type="search" placeholder="筛选标题、价格、店铺或链接">
+      </section>
+      <section id="researchTable" class="research-table"></section>
+    </section>
+
+    <section class="page" data-page="settings" hidden>
+      <section class="page-heading">
+        <div>
+          <p class="eyebrow">SETTINGS</p>
+          <h2>设置</h2>
+        </div>
+      </section>
+
+      <details class="panel" id="modelPanel" open>
+        <summary class="section-title">视觉模型设置<span id="saveState"></span></summary>
+        <div class="row two">
+          <label>
+            接口地址
+            <input id="apiEndpoint" type="url" value="https://api.openai.com/v1/responses">
+          </label>
+          <label>
+            模型
+            <input id="model" type="text" value="gpt-4.1-mini">
+          </label>
+        </div>
+        <label>
+          接口格式
+          <select id="apiMode">
+            <option value="auto" selected>自动判断</option>
+            <option value="chat">Chat Completions</option>
+            <option value="responses">Responses</option>
+          </select>
+        </label>
+        <label>
+          API Key
+          <input id="apiKey" type="password" placeholder="仅保存在本机浏览器">
+        </label>
+        <div class="hint">第三方接口一般选 Chat Completions。模型必须支持图片输入。</div>
+      </details>
+
+      <section class="panel">
+        <div class="section-title">商家规则</div>
+        <div class="rule-row"><span>SKU 规则</span><button class="text-button" type="button" data-rule-action="sku">配置</button></div>
+        <div class="rule-row"><span>价格与利润率</span><button class="text-button" type="button" data-rule-action="price">配置</button></div>
+        <div class="rule-row"><span>平台固定字段</span><button class="text-button" type="button" data-rule-action="platform">配置</button></div>
+        <div class="rule-row"><span>AI 内容规则</span><button class="text-button" type="button" data-rule-action="content">配置</button></div>
+        <div class="hint">这些规则会用于后续模板自动生成，未知规则不会被程序擅自覆盖。</div>
+      </section>
+    </section>
+
+    <section class="page" data-page="rules" data-page-parent="settings" hidden>
+      <section class="page-heading rules-heading">
+        <div>
+          <button class="back-button" type="button" data-go-page="settings">返回设置</button>
+          <p class="eyebrow">MERCHANT RULES</p>
+          <h2>商家规则</h2>
+          <p class="page-copy">这里的规则会直接影响后续模板生成。没有确认的规则先留空。</p>
+        </div>
+        <span id="rulesSaveState" class="page-badge">未修改</span>
+      </section>
+
+      <section class="panel rule-section" data-rule-section="sku">
+        <div class="section-title">SKU 规则</div>
+        <div class="hint rule-intro">用于把产品资料里的原始 SKU 转成各平台使用的调价 SKU。示例只作为初始值，可以修改。</div>
+        <div class="rule-grid three">
+          <label>原 SKU 前缀<input id="skuSourcePrefix" type="text" placeholder="如 EB-C-1-"></label>
+          <label>目标 SKU 前缀<input id="skuTargetPrefix" type="text" placeholder="如 EB-C-3-"></label>
+          <label>默认套数<input id="skuDefaultMultiplier" type="number" min="1" step="1" placeholder="1"></label>
+        </div>
+        <div class="rule-table-head"><span>原套数标记</span><span>目标套数标记</span><span>备注</span></div>
+        <div class="rule-table-row">
+          <input id="skuPack2Source" type="text" placeholder="如 *2">
+          <input id="skuPack2Target" type="text" placeholder="如 *6">
+          <input id="skuPack2Note" type="text" placeholder="两件套规则">
+        </div>
+        <label class="checkbox rule-check"><input id="skuKeepUnknown" type="checkbox" checked> 未匹配规则的 SKU 保留原值，并列入待确认</label>
+      </section>
+
+      <section class="panel rule-section" data-rule-section="price">
+        <div class="section-title">价格与利润率</div>
+        <div class="rule-grid two">
+          <label>非欧盟最低利润率（%）<input id="nonEuMinMargin" type="number" min="0" step="0.1" placeholder="1"></label>
+          <label>欧盟最低利润率（%）<input id="euMinMargin" type="number" min="0" step="0.1" placeholder="10"></label>
+          <label>新品低于竞品均价（€）<input id="launchUndercut" type="number" min="0" step="0.1" placeholder="2"></label>
+          <label>价格保留小数位<input id="priceDecimals" type="number" min="0" max="2" step="1" placeholder="2"></label>
+        </div>
+        <div class="rule-table-head platform-rule-head"><span>平台</span><span>平台费率（%）</span><span>尾程运费（€）</span></div>
+        <div class="rule-table-row platform-rule-row"><span>OTTO</span><input id="feeOtto" type="number" min="0" step="0.1"><input id="shippingOtto" type="number" min="0" step="0.01"></div>
+        <div class="rule-table-row platform-rule-row"><span>REAL / VK</span><input id="feeRealVk" type="number" min="0" step="0.1"><input id="shippingRealVk" type="number" min="0" step="0.01"></div>
+        <div class="rule-table-row platform-rule-row"><span>CD / LML / But</span><input id="feeCdLmlBut" type="number" min="0" step="0.1"><input id="shippingCdLmlBut" type="number" min="0" step="0.01"></div>
+        <div class="rule-table-row platform-rule-row"><span>SHEIN</span><input id="feeShein" type="number" min="0" step="0.1"><input id="shippingShein" type="number" min="0" step="0.01"></div>
+        <div class="rule-table-row platform-rule-row"><span>TK</span><input id="feeTk" type="number" min="0" step="0.1"><input id="shippingTk" type="number" min="0" step="0.01"></div>
+        <div class="hint">平台费率和尾程运费没有确认时不要填估算值，留空后生成文件会标记为待确认。</div>
+      </section>
+
+      <section class="panel rule-section" data-rule-section="platform">
+        <div class="section-title">平台固定字段</div>
+        <div class="rule-grid two">
+          <label>默认店铺/账号<input id="defaultShop" type="text" placeholder="未确认"></label>
+          <label>默认仓库<input id="defaultWarehouse" type="text" placeholder="如 DE / EE / PL"></label>
+          <label>默认运输时间<input id="defaultDeliveryDays" type="text" placeholder="如 4-8d"></label>
+          <label>默认库存<input id="defaultStock" type="number" min="0" step="1" placeholder="未设置"></label>
+          <label>默认重量单位<input id="weightUnit" type="text" value="g" placeholder="如 g"></label>
+          <label>默认尺寸单位<input id="dimensionUnit" type="text" value="mm" placeholder="如 mm"></label>
+        </div>
+        <div class="rule-grid two">
+          <label>默认分类<input id="defaultCategory" type="text" placeholder="留空，由平台调研或 AI 判断"></label>
+          <label>默认品牌<input id="defaultBrand" type="text" placeholder="留空，不自动猜品牌"></label>
+        </div>
+      </section>
+
+      <section class="panel rule-section" data-rule-section="content">
+        <div class="section-title">AI 内容规则</div>
+        <div class="rule-grid two">
+          <label>标题默认语言<input id="contentLanguage" type="text" value="按平台站点语言" placeholder="如 Deutsch"></label>
+          <label>标题禁用词<input id="contentBannedWords" type="text" placeholder="用逗号分隔"></label>
+          <label>产品描述风格<input id="contentTone" type="text" value="准确、简洁、可核验" placeholder="如 专业、简洁"></label>
+          <label>禁止虚构字段<input id="contentNoGuess" type="text" value="品牌、认证、材质、尺寸、功能" placeholder="用逗号分隔"></label>
+        </div>
+        <label class="checkbox rule-check"><input id="contentRequireKeywords" type="checkbox" checked> 标题和描述必须使用已确认关键词</label>
+        <label class="checkbox rule-check"><input id="contentMarkUnknown" type="checkbox" checked> AI 无法确认的内容列入待确认，不自动填入</label>
+      </section>
+
+      <div class="rule-actions">
+        <button id="resetMerchantRules" type="button">恢复初始规则</button>
+        <button id="saveMerchantRules" class="primary" type="button">保存商家规则</button>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

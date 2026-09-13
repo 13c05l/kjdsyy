@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>算法自检</title>
+  <style>
+    body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; background: #f5f7fa; color: #17212b; }
+    h1 { font-size: 19px; }
+    h2 { font-size: 14px; margin-top: 26px; }
+    .case { padding: 7px 10px; border-radius: 5px; margin: 5px 0; font-size: 13px; font-family: Consolas, monospace; }
+    .pass { background: #dcf5e7; color: #14663f; }
+    .fail { background: #fbe6e4; color: #a93b30; }
+    .info { background: #e7eef6; color: #3d5a75; }
+    #tally { font-size: 15px; font-weight: 700; margin-top: 20px; padding: 10px; border-radius: 6px; }
+    canvas { border: 1px solid #ccc; margin: 4px; background: #fff; vertical-align: middle; }
+    .shapes { margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <h1>算法自检</h1>
+  <p style="font-size:13px;color:#5e6b79">
+    直接在浏览器打开本文件即可运行。重点验证：梯度特征能区分外形，而旧的亮度哈希不能。
+  </p>
+  <div class="shapes" id="shapes"></div>
+  <div id="output"></div>
+  <div id="tally"></div>
+
+  <script type="module">
+    import { gradientFeature, colorFeature, cosineSimilarity, histogramSimilarity, featureSimilarity, thresholdFor, applyThreshold, normalizeFraming, contentBounds } from "./lib/local-filter.js";
+    import { endpointUrl, apiModeFor, parseJsonObject, modelText } from "./lib/api.js";
+    import { parseScoreReply, weightedTotal, normalizeVerdict, runPool } from "./lib/vision.js";
+    import { ebayImageUrlAtSize } from "./lib/image.js";
+
+    let passed = 0;
+    let failed = 0;
+    const output = document.getElementById("output");
+
+    function section(title) {
+      const node = document.createElement("h2");
+      node.textContent = title;
+      output.appendChild(node);
+    }
+
+    function check(name, condition, detail = "") {
+      const node = document.createElement("div");
+      node.className = `case ${condition ? "pass" : "fail"}`;
+      node.textContent = `${condition ? "通过" : "失败"} — ${name}${detail ? ` (${detail})` : ""}`;
+      output.appendChild(node);
+      condition ? passed++ : failed++;
+    }
+
+    function note(text) {
+      const node = document.createElement("div");
+      node.className = "case info";
+      node.textContent = text;
+      output.appendChild(node);
+    }
+
+    // --- synthetic shapes -------------------------------------------------
+    // Drawn on white, mimicking marketplace product photos.
+
+    function draw(drawer, { show = true, label = "" } = {}) {
+      const size = 64;
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, size, size);
+      drawer(context, size);
+      if (show) {
+        canvas.title = label;
+        document.getElementById("shapes").appendChild(canvas);
+      }
+      return context.getImageData(0, 0, size, size).data;
+    }
+
+    const circle = (fill) => (context, size) => {
+      context.fillStyle = fill;
+      context.beginPath();
+      context.arc(size / 2, size / 2, size * 0.32, 0, Math.PI * 2);
+      context.fill();
+    };
+    const circleSmall = (fill) => (context, size) => {
+      context.fillStyle = fill;
+      context.beginPath();
+      context.arc(size / 2, size / 2, size * 0.22, 0, Math.PI * 2);
+      context.fill();
+    };
+    const square = (fill) => (context, size) => {
+      context.fillStyle = fill;
+      context.fillRect(size * 0.2, size * 0.2, size * 0.6, size * 0.6);
+    };
+
+    const pixelsCircle = draw(circle("#3b6ea5"), { label: "圆 蓝" });
+    const pixelsCircleSmall = draw(circleSmall("#3b6ea5"), { label: "小圆 蓝（同形不同大小）" });
+    const pixelsCircleRed = draw(circle("#b53f34"), { label: "圆 红（同形不同色）" });
+    const pixelsSquare = draw(square("#3b6ea5"), { label: "方 蓝（不同形同色）" });
+
+    // Mirrors extractFeatures(): normalise framing, then measure.
+    const feature = (pixels) => {
+      const framed = normalizeFraming(pixels, 64, 64);
+      return { gradient: gradientFeature(framed, 64), color: colorFeature(framed) };
+    };
+    const fCircle = feature(pixelsCircle);
+    const fCircleSmall = feature(pixelsCircleSmall);
+    const fCircleRed = feature(pixelsCircleRed);
+    const fSquare = feature(pixelsSquare);
+
+    section("裁剪归一：消除取景差异");
+
+    const bounds = contentBounds(pixelsCircleSmall, 64);
+    check("能框出商品范围", bounds.width > 20 && bounds.width < 40,
+      `${bounds.width}x${bounds.height} @(${bounds.x},${bounds.y})`);
+    check("全白图回退为整幅",
+      contentBounds(draw(() => {}, { show: false }), 64).empty === true);
+    note("没有这一步，同一商品拍得远一点近一点就会被判成两样东西。");
+
+    section("核心验证：梯度特征能区分外形");
+
+    const sameShapeDiffSize = cosineSimilarity(fCircle.gradient, fCircleSmall.gradient);
+    const diffShapeSameColor = cosineSimilarity(fCircle.gradient, fSquare.gradient);
+    check(
+      "同形状不同大小，形状相似度高于不同形状",
+      sameShapeDiffSize > diffShapeSameColor,
+      `圆vs小圆=${sameShapeDiffSize.toFixed(3)}，圆vs方=${diffShapeSameColor.toFixed(3)}`
+    );
+
+    const sameShapeDiffColor = cosineSimilarity(fCircle.gradient, fCircleRed.gradient);
+    check(
+      "同形状不同颜色，形状相似度接近满分",
+      sameShapeDiffColor > 0.95,
+      `=${sameShapeDiffColor.toFixed(3)}`
+    );
+
+    check(
+      "自身比对为 1",
+      Math.abs(cosineSimilarity(fCircle.gradient, fCircle.gradient) - 1) < 1e-6
+    );
+
+    section("综合打分：形状主导，颜色次要");
+
+    const scoreSameShapeDiffColor = featureSimilarity(fCircle, fCircleRed);
+    const scoreDiffShapeSameColor = featureSimilarity(fCircle, fSquare);
+    check(
+      "同款不同配色 应当胜过 不同外形同配色",
+      scoreSameShapeDiffColor > scoreDiffShapeSameColor,
+      `${scoreSameShapeDiffColor.toFixed(3)} > ${scoreDiffShapeSameColor.toFixed(3)}`
+    );
+    note(`这正是旧算法（亮度哈希+全图颜色）做不到的：它会把同色不同形判为更相似。`);
+
+    section("颜色特征忽略白底");
+
+    const colorOfCircle = colorFeature(pixelsCircle);
+    check("白底不计入颜色统计", colorOfCircle.coverage > 0.05 && colorOfCircle.coverage < 0.5,
+      `商品像素占比=${(colorOfCircle.coverage * 100).toFixed(1)}%`);
+    check("同色不同大小 颜色分布接近",
+      histogramSimilarity(colorOfCircle.buckets, colorFeature(pixelsCircleSmall).buckets) > 0.9);
+    check("不同颜色 颜色分布明显不同",
+      histogramSimilarity(colorOfCircle.buckets, colorFeature(pixelsCircleRed).buckets) < 0.3);
+
+    section("粗筛阈值");
+
+    check("适中档=0.35", thresholdFor("medium") === 0.35);
+    check("不筛档返回 null", thresholdFor("off") === null);
+    check("未知档位回落到适中", thresholdFor("nonsense") === 0.35);
+
+    const sample = [
+      { rank: 1, localScore: 0.8 },
+      { rank: 2, localScore: 0.3 },
+      { rank: 3, localScore: null }
+    ];
+    const mediumResult = applyThreshold(sample, "medium");
+    check("低于阈值被排除", mediumResult.dropped.length === 1 && mediumResult.dropped[0].rank === 2);
+    check("解码失败的不被排除", mediumResult.kept.some((item) => item.rank === 3));
+    check("不筛档全部保留", applyThreshold(sample, "off").kept.length === 3);
+
+    section("eBay 图片地址改写");
+
+    check("225 改写为 500",
+      ebayImageUrlAtSize("https://i.ebayimg.com/images/g/abc/s-l225.jpg", 500)
+        === "https://i.ebayimg.com/images/g/abc/s-l500.jpg");
+    check("带查询参数也能改写",
+      ebayImageUrlAtSize("https://i.ebayimg.com/images/g/abc/s-l225.jpg?x=1", 500)
+        === "https://i.ebayimg.com/images/g/abc/s-l500.jpg");
+    check("非 eBay 域名原样返回",
+      ebayImageUrlAtSize("https://example.com/a.jpg", 500) === "https://example.com/a.jpg");
+    check("空值安全", ebayImageUrlAtSize("", 500) === "");
+
+    section("接口地址规范化");
+
+    check("OpenAI 自动判定为 Responses",
+      endpointUrl("https://api.openai.com/v1", "auto").endsWith("/v1/responses"));
+    check("第三方 /v1 补成 chat/completions",
+      endpointUrl("https://x.example.com/v1", "chat").endsWith("/v1/chat/completions"));
+    check("responses 可转 chat",
+      endpointUrl("https://x.example.com/v1/responses", "chat").endsWith("/v1/chat/completions"));
+    check("重复调用结果稳定",
+      endpointUrl(endpointUrl("https://api.openai.com/v1", "auto"), "auto").endsWith("/v1/responses"));
+    check("模式判定正确", apiModeFor("https://api.openai.com/v1", "auto") === "responses");
+    check("非法地址抛错", (() => {
+      try { endpointUrl("not a url"); return false; } catch { return true; }
+    })());
+
+    section("模型返回解析");
+
+    check("解析纯 JSON", parseJsonObject('{"a":1}').a === 1);
+    check("解析被 ``` 包裹的 JSON", parseJsonObject('```json\n{"a":2}\n```').a === 2);
+    check("解析夹带说明文字的 JSON", parseJsonObject('好的：{"a":3} 以上').a === 3);
+    check("无 JSON 时抛错", (() => {
+      try { parseJsonObject("没有对象"); return false; } catch { return true; }
+    })());
+
+    check("读取 Chat Completions 文本",
+      modelText({ choices: [{ message: { content: "hi" } }] }) === "hi");
+    check("读取 Responses 文本", modelText({ output_text: "hi" }) === "hi");
+
+    section("六维打分");
+
+    const reply = parseScoreReply('{"productType":90,"function":80,"shape":70,"structure":60,"material":50,"cost":40,"verdict":"同功能相似款","reason":"类型功能一致，结构不同"}');
+    check("分数归一到 0-1", Math.abs(reply.scores.productType - 0.9) < 1e-9);
+    check("加权总分正确",
+      Math.abs(reply.visionScore - (0.9 * 0.25 + 0.8 * 0.25 + 0.7 * 0.20 + 0.6 * 0.15 + 0.5 * 0.10 + 0.4 * 0.05)) < 1e-9,
+      `=${reply.visionScore.toFixed(4)}`);
+    check("判断标签保留", reply.verdict === "同功能相似款");
+    check("越界分数被夹紧",
+      parseScoreReply('{"productType":150,"function":-20,"shape":50,"structure":50,"material":50,"cost":50}').scores.productType === 1);
+    check("缺项时按剩余权重归一", (() => {
+      const partial = weightedTotal({ productType: 1, function: null, shape: null, structure: null, material: null, cost: null });
+      return Math.abs(partial - 1) < 1e-9;
+    })());
+   check("非法判断标签被丢弃", normalizeVerdict("胡说") === "");
+    check("同功能相似款标签保留", normalizeVerdict("同功能相似款") === "同功能相似款");
+    check("全部无效分数时抛错", (() => {
+      try { parseScoreReply('{"verdict":"同款"}'); return false; } catch { return true; }
+    })());
+
+    section("并发池");
+
+    const poolOrder = [];
+    const poolResults = await runPool([1, 2, 3, 4, 5], async (value) => {
+      await new Promise((resolve) => setTimeout(resolve, (6 - value) * 8));
+      poolOrder.push(value);
+      return value * 2;
+    }, { concurrency: 2 });
+    check("全部完成", poolResults.length === 5 && poolResults.every((entry) => entry.ok));
+    check("结果按输入顺序对齐", poolResults[0].value === 2 && poolResults[4].value === 10);
+    check("确实是并发（完成顺序非输入顺序）", poolOrder.join(",") !== "1,2,3,4,5",
+      `完成顺序=${poolOrder.join(",")}`);
+
+    const withFailure = await runPool([1, 2, 3], async (value) => {
+      if (value === 2) throw new Error("boom");
+      return value;
+    }, { concurrency: 3 });
+    check("单个失败不影响其他", withFailure[0].ok && withFailure[2].ok);
+    check("失败项被标记", !withFailure[1].ok && withFailure[1].error.message === "boom");
+
+    const fatal = await runPool([1, 2, 3], async () => {
+      const error = new Error("401");
+      error.fatal = true;
+      throw error;
+    }, { concurrency: 1 }).then(() => "没抛错").catch((error) => error.message);
+    check("致命错误立即中断整批", fatal === "401");
+
+    // --- tally ------------------------------------------------------------
+    const tally = document.getElementById("tally");
+    tally.textContent = failed === 0
+      ? `全部通过：${passed} 项`
+      : `${passed} 项通过，${failed} 项失败`;
+    tally.style.background = failed === 0 ? "#dcf5e7" : "#fbe6e4";
+    tally.style.color = failed === 0 ? "#14663f" : "#a93b30";
+  </script>
+</body>
+</html>
