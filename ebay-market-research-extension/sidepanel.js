@@ -525,29 +525,20 @@ async function messageTab(message) {
   }
 }
 
-async function ensureEndpointPermission(endpoint) {
-  const origin = originPatternFor(endpoint);
-  if (await chrome.permissions.contains({ origins: [origin] })) return;
-  if (!(await chrome.permissions.request({ origins: [origin] }))) {
-    throw new Error("未授予该 API 地址的访问权限");
-  }
-}
-
-async function ensureImagePermissions(items) {
-  const origins = [...new Set(items.map((item) => {
-    try {
-      const url = new URL(item.imageUrl);
-      return /^https?:$/i.test(url.protocol) ? url.protocol + "//" + url.host + "/*" : "";
-    } catch {
-      return "";
-    }
-  }).filter(Boolean))].slice(0, 20);
-  const missing = [];
-  for (const origin of origins) {
-    if (!(await chrome.permissions.contains({ origins: [origin] }))) missing.push(origin);
-  }
-  if (missing.length && !(await chrome.permissions.request({ origins: missing }))) {
-    throw new Error("未授予商品图片访问权限");
+// This function must be called directly from a click handler. Any await before
+// chrome.permissions.request() makes Chrome reject it as a stale user gesture.
+function requestRunPermissions(settings, { needsApi = false } = {}) {
+  if (!needsApi) return Promise.resolve(true);
+  try {
+    const origin = originPatternFor(settings.endpoint);
+    // ManoMano image hosts are declared in manifest.json. Only the user-entered
+    // API origin needs a runtime permission prompt.
+    return chrome.permissions.request({ origins: [origin] }).then((granted) => {
+      if (!granted) throw new Error("未授予 API 地址的访问权限");
+      return true;
+    });
+  } catch (error) {
+    return Promise.reject(error);
   }
 }
 
@@ -618,7 +609,11 @@ function renderInto(node, item) {
     const retry = document.createElement("button");
     retry.className = "retry";
     retry.textContent = "重试这一个";
-    retry.addEventListener("click", () => retryOne(item.rank));
+    retry.addEventListener("click", () => {
+      const settings = currentSettings();
+      const permissionPromise = requestRunPermissions(settings, { needsApi: true });
+      retryOne(item.rank, settings, permissionPromise);
+    });
     node.querySelector(".result-main").appendChild(retry);
   }
 }
@@ -890,17 +885,16 @@ function releaseCandidateImages(items) {
   }
 }
 
-async function retryFailed() {
+async function retryFailed(settings = currentSettings(), permissionPromise = Promise.resolve(true)) {
   if (state.running) return;
   const failedItems = state.items.filter((item) => item.status === "failed");
   if (!failedItems.length) return;
 
-  const settings = currentSettings();
   try {
     if (!state.referenceDataUrl) throw new Error("没有参考图，无法重试识别");
     if (!settings.apiKey) throw new Error("没有填写 API Key");
     if (!settings.model) throw new Error("没有填写模型名称");
-    await ensureEndpointPermission(settings.endpoint);
+    await permissionPromise;
 
     state.controller = new AbortController();
     for (const item of failedItems) {
@@ -928,21 +922,19 @@ async function retryFailed() {
   }
 }
 
-async function analyze() {
-  const settings = currentSettings();
-  await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
-
+async function analyze(settings = currentSettings(), permissionPromise = Promise.resolve(true)) {
   state.controller = new AbortController();
   setRunning(true);
   $("#summary").hidden = true;
   setProgress(0, 0);
 
   try {
+    await permissionPromise;
+    await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
     const useVision = settings.useVision && state.referenceDataUrl;
     if (useVision) {
       if (!settings.apiKey) throw new Error("已开启视觉模型比对，但没有填写 API Key");
       if (!settings.model) throw new Error("已开启视觉模型比对，但没有填写模型名称");
-      await ensureEndpointPermission(settings.endpoint);
     }
 
     setStatus("正在读取当前平台商品…");
@@ -971,7 +963,6 @@ async function analyze() {
       return;
     }
 
-    if (useVision || state.referenceDataUrl) await ensureImagePermissions(collected.items);
     setStatus(`已读取 ${collected.items.length} 个商品，正在本地粗筛…`);
     const { kept, dropped } = await localPass(collected.items, settings);
     const threshold = thresholdFor(settings.filterLevel);
@@ -1041,14 +1032,14 @@ async function analyze() {
   }
 }
 
-async function retryOne(rank) {
+async function retryOne(rank, settings = currentSettings(), permissionPromise = Promise.resolve(true)) {
   const item = state.items.find((entry) => entry.rank === rank);
   if (!item || state.running) return;
-  const settings = currentSettings();
   item.status = "pending";
   item.error = "";
   updateRow(item);
   try {
+    await permissionPromise;
     const referenceImage = await resizeDataUrl(state.referenceDataUrl, 384, 0.72);
     const candidateImage = await visionImageFor(item);
     if (!candidateImage) throw new Error("没有取到商品图片");
@@ -1192,8 +1183,18 @@ async function initialize() {
     event.target.value = "";
   });
 
-  $("#analyze").addEventListener("click", analyze);
-  $("#retryFailed").addEventListener("click", retryFailed);
+  $("#analyze").addEventListener("click", () => {
+    const settings = currentSettings();
+    const permissionPromise = requestRunPermissions(settings, {
+      needsApi: Boolean(settings.useVision && state.referenceDataUrl)
+    });
+    analyze(settings, permissionPromise);
+  });
+  $("#retryFailed").addEventListener("click", () => {
+    const settings = currentSettings();
+    const permissionPromise = requestRunPermissions(settings, { needsApi: true });
+    retryFailed(settings, permissionPromise);
+  });
   $("#stop").addEventListener("click", () => {
     state.controller?.abort();
     setStatus("正在停止…");

@@ -23,13 +23,13 @@ const MARKETPLACES = [
     cardSelectors: ["[data-testid*='product-card']", "[data-testid*='product']", "li[class*='product']", "[class*='product-card']"],
     linkPatterns: [/\/p\//i, /\/mp\//i],
     titleSelectors: ["[data-testid*='product-name']", "[data-testid*='title']", "[class*='product-title']", "[class*='ProductTitle']", "h2", "h3"],
-    priceSelectors: ["[data-testid*='price']", "[data-qa*='price']", "[class*='price']", "[class*='Price']"]
+    priceSelectors: ["[data-testid*='product-price']", "[data-testid*='selling-price']", "[data-testid*='price']", "[data-test*='price']", "[data-qa*='price']", "[class*='price']", "[class*='Price']"]
   },
   { id: "manomano-fr", label: "ManoMano FR", domains: ["manomano.fr"], priceOnly: true,
     cardSelectors: ["[data-testid*='product-card']", "[data-testid*='product']", "li[class*='product']", "[class*='product-card']"],
     linkPatterns: [/\/p\//i, /\/mp\//i],
     titleSelectors: ["[data-testid*='product-name']", "[data-testid*='title']", "[class*='product-title']", "[class*='ProductTitle']", "h2", "h3"],
-    priceSelectors: ["[data-testid*='price']", "[data-qa*='price']", "[class*='price']", "[class*='Price']"]
+    priceSelectors: ["[data-testid*='product-price']", "[data-testid*='selling-price']", "[data-testid*='price']", "[data-test*='price']", "[data-qa*='price']", "[class*='price']", "[class*='Price']"]
   },
   { id: "leroymerlin-fr", label: "Leroy Merlin FR", domains: ["leroymerlin.fr"], priceOnly: true,
     cardSelectors: ["[data-testid*='product-card']", "[data-testid*='product']", "article[class*='product']", "li[class*='product']"],
@@ -169,29 +169,277 @@ function genericTitleFromCard(card, config) {
     || normalizeText(attrFrom(["img[alt]"], "alt", card));
 }
 
+const PRICE_CURRENCY = "(?:€|EUR|CHF|£|GBP|\\$|USD|PLN|kr)";
+const SPACED_PRICE_RE = new RegExp("(?:^|[^\\d])(\\d{1,3})\\s+(?:0\\s+)?(\\d{2})\\s*(" + PRICE_CURRENCY + ")(?=$|[^\\w])", "i");
+const DECIMAL_PRICE_RE = new RegExp("(?:[$£€]\\s*)?(\\d{1,3}(?:[.\\s]\\d{3})*|\\d+)[.,](\\d{2})\\s*(" + PRICE_CURRENCY + ")?", "i");
+const INTEGER_PRICE_RE = new RegExp("(?:^|[^\\d])(\\d{1,3}(?:[.\\s]\\d{3})*|\\d+)\\s*(" + PRICE_CURRENCY + ")(?=$|[^\\w])", "i");
+
 function normalizePrice(value) {
-  const text = normalizeText(value);
-  const match = text.match(/(?:[$£€]\s?\d{1,3}(?:[.\s]\d{3})*(?:[,.]\d{2})?|\d{1,3}(?:[.\s]\d{3})*(?:[,.]\d{2})?\s?(?:€|EUR|CHF|£|GBP|\$|USD|PLN|kr))/i);
-  return match ? normalizeText(match[0]) : text.slice(0, 80);
+  const text = normalizeText(value).replace(/\u00a0/g, " ");
+  if (!text) return "";
+
+  // The visible ManoMano amount may be 69 23 €, or 69 0 23 € in the DOM.
+  const spacedDecimal = text.match(SPACED_PRICE_RE);
+  if (spacedDecimal && spacedDecimal[1] !== "0") {
+    return spacedDecimal[1] + "." + spacedDecimal[2] + " " + spacedDecimal[3];
+  }
+
+  const decimal = text.match(DECIMAL_PRICE_RE);
+  if (decimal) return decimal[0].trim();
+
+  const integer = text.match(INTEGER_PRICE_RE);
+  return integer ? integer[0].trim() : "";
+}
+
+function normalizeManoManoPriceLegacy(value) {
+  const text = normalizeText(value).replace(/\u00a0/g, " ");
+  if (!text) return "";
+  const matches = text.match(/(?:\d[\d.,]*[.,]\d{2}|\d{1,4}\s+(?:0\s+)?\d{2})\s*(?:€|EUR|CHF|£|GBP|\$|USD|PLN|kr)/gi) || [];
+  for (const match of matches) {
+    const amount = match.match(/(\d[\d.,\s]*)[,.](\d{2})/)
+      || match.match(/(\d{1,4})\s+(?:0\s+)?(\d{2})/);
+    if (!amount) continue;
+    let integer = amount[1].replace(/[.,\s]/g, "");
+    if (integer === "0") continue;
+    // ManoMano's rendered price can contain one extra zero before the cents.
+    // Example: 650,56 is the displayed price 65,56.
+    if (integer.length === 3 && integer.endsWith("0")) integer = integer.slice(0, -1);
+    if (integer) return integer + "," + amount[2] + " €";
+  }
+  return "";
+}
+
+function normalizeManoManoPrice(value) {
+  const text = normalizeText(value).replace(/\u00a0/g, " ");
+  if (!text) return "";
+  const currency = "(?:€|EUR|CHF|£|GBP|\\$|USD|PLN|kr)";
+  const patterns = [
+    new RegExp("(\\d[\\d. ]*)\\s*[,\\.]\\s*(?:0\\s*[,\\.]?\\s*)?(\\d{2})\\s*" + currency, "i"),
+    new RegExp("(\\d{1,4})\\s+(?:0\\s+)?(\\d{2})\\s*" + currency, "i")
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    let integer = match[1].replace(/[. ]/g, "");
+    if (integer === "0") continue;
+    // ManoMano's list markup exposes one extra zero before the cents.
+    if (integer.length === 3 && integer.endsWith("0")) integer = integer.slice(0, -1);
+    return integer + "," + match[2] + " €";
+  }
+  return "";
+}
+
+function pseudoPriceText(element, pseudo) {
+  try {
+    const content = getComputedStyle(element, pseudo).content || "";
+    if (!content || content === "none" || content === "normal") return "";
+    const quoted = content.match(/^["']([\\s\\S]*)["']$/);
+    return normalizeText(quoted ? quoted[1] : content);
+  } catch {
+    return "";
+  }
+}
+
+function manoManoPriceSources(element) {
+  const sources = [];
+  let node = element;
+  for (let depth = 0; node && depth < 4; depth += 1) {
+    const before = pseudoPriceText(node, "::before");
+    const after = pseudoPriceText(node, "::after");
+    const text = node.innerText || node.textContent || "";
+    if (before || after) sources.push([before, text, after].filter(Boolean).join(" "));
+    if (text) sources.push(text);
+    node = node.parentElement;
+  }
+  return sources;
+}
+
+function manoManoPriceFromCard(card) {
+  const selectors = [
+    "[data-testid*='current-price']",
+    "[data-testid*='product-price']",
+    "[data-testid*='selling-price']",
+    "[data-testid*='price']",
+    "[data-test*='price']",
+    "[itemprop='price']",
+    "[class*='current-price']",
+    "[class*='product-price']",
+    "[class*='selling-price']",
+    "[class*='price']",
+    "[class*='Price']"
+  ];
+  const seen = new Set();
+  for (const selector of selectors) {
+    for (const element of card.querySelectorAll(selector)) {
+      if (seen.has(element) || element.closest("del, s")) continue;
+      seen.add(element);
+      for (const source of manoManoPriceSources(element)) {
+        const price = normalizeManoManoPrice(source);
+        if (price) return price;
+      }
+    }
+  }
+  return normalizeManoManoPrice(card.innerText || card.textContent || "");
+}
+
+function formatRawPrice(raw, currency = "EUR") {
+  if (raw == null || raw === "") return "";
+  let text = String(raw).replace(/\u00a0/g, " ").trim();
+  const match = text.match(/-?\d[\d.,\s]*/);
+  if (!match) return "";
+  text = match[0].replace(/\s/g, "");
+  const comma = text.lastIndexOf(",");
+  const dot = text.lastIndexOf(".");
+  if (comma >= 0 && dot >= 0) {
+    text = comma > dot ? text.replace(/\./g, "").replace(",", ".") : text.replace(/,/g, "");
+  } else if (comma >= 0) {
+    text = /,\d{2}$/.test(text) ? text.replace(",", ".") : text.replace(/,/g, "");
+  } else if (dot >= 0 && !(/\.\d{2}$/.test(text))) {
+    text = text.replace(/\./g, "");
+  }
+  const number = Number(text);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  const label = /EUR|€/i.test(String(currency)) ? "€" : String(currency || "€");
+  return number.toFixed(2).replace(".", ",") + " " + label;
+}
+
+function normalizeDecimalPrice(value) {
+  const text = normalizeText(value).replace(/\u00a0/g, " ");
+  if (!text) return "";
+  const spacedDecimal = text.match(SPACED_PRICE_RE);
+  if (spacedDecimal && spacedDecimal[1] !== "0") {
+    return spacedDecimal[1] + "." + spacedDecimal[2] + " " + spacedDecimal[3];
+  }
+  const decimal = text.match(DECIMAL_PRICE_RE);
+  return decimal ? decimal[0].trim() : "";
+}
+
+function isFractionOnlyPrice(value) {
+  return new RegExp("^0[.,]\\d{2}\\s*" + PRICE_CURRENCY + "?$", "i").test(normalizeText(value));
+}
+
+function pseudoContentText(node, pseudo) {
+  try {
+    const content = getComputedStyle(node, pseudo).content || "";
+    if (!content || content === "none" || content === "normal") return "";
+    const quoted = content.match(/^["']([\\s\\S]*)["']$/);
+    return normalizeText(quoted ? quoted[1] : content);
+  } catch {
+    return "";
+  }
+}
+
+function priceTextCandidates(node) {
+  const text = normalizeText(node.innerText || node.textContent || "").replace(/\u00a0/g, " ");
+  const before = pseudoContentText(node, "::before");
+  const after = pseudoContentText(node, "::after");
+  const candidates = [];
+  for (const pseudo of [before, after]) {
+    if (!/^\d{1,3}$/.test(pseudo)) continue;
+    const fraction = text.match(new RegExp("^(?:0\\s*[,.]?\\s*)?(\\d{2})\\s*(" + PRICE_CURRENCY + ")\\s*$", "i"));
+    if (fraction) candidates.push(pseudo + "." + fraction[1] + " " + fraction[2]);
+  }
+  if (before || after) candidates.push([before, text, after].filter(Boolean).join(" "));
+  if (text) candidates.push(text);
+  return candidates;
+}
+
+function priceNodeIsStruck(node) {
+  if (node.closest("del, s, [aria-label*='old price' i]")) return true;
+  return /line-through/i.test(getComputedStyle(node).textDecorationLine || "");
+}
+
+function priceFromElement(element, card = null) {
+  const nodes = [];
+  let node = element;
+  for (let depth = 0; node && depth < 7; depth += 1) {
+    nodes.push(node);
+    if (node === card) break;
+    node = node.parentElement;
+  }
+
+  let fractionFallback = "";
+
+  // Read complete visible or machine-readable prices first. Do not rebuild an
+  // amount from arbitrary child nodes: ManoMano exposes hidden helper digits.
+  for (const node of nodes) {
+    if (priceNodeIsStruck(node)) continue;
+    for (const candidate of priceTextCandidates(node)) {
+      const visiblePrice = normalizeDecimalPrice(candidate);
+      if (visiblePrice) {
+        if (isFractionOnlyPrice(visiblePrice)) fractionFallback ||= visiblePrice;
+        else return visiblePrice;
+      }
+    }
+  }
+
+  for (const node of nodes) {
+    if (priceNodeIsStruck(node)) continue;
+    const machinePrice = [
+      node.getAttribute("content"),
+      node.getAttribute("data-price"),
+      node.getAttribute("data-value")
+    ].map(normalizePrice).find(Boolean);
+    if (machinePrice) {
+      if (isFractionOnlyPrice(machinePrice)) fractionFallback ||= machinePrice;
+      else return machinePrice;
+    }
+
+  }
+
+  const accessiblePrice = [element.getAttribute("aria-label"), element.getAttribute("title")]
+    .map(normalizePrice)
+    .find(Boolean) || "";
+  return accessiblePrice || fractionFallback;
 }
 
 function genericPriceFromCard(card, config) {
-  const values = [];
-  for (const selector of config.priceSelectors || []) {
-    for (const element of card.querySelectorAll(selector)) {
-      values.push(element.getAttribute("content") || element.textContent || "");
+  const isManoMano = config.id === "manomano-de" || config.id === "manomano-fr";
+  const cardText = card.innerText || card.textContent || "";
+  if (isManoMano) {
+    // Read the complete card first. This avoids accepting a child node that
+    // contains only the cents, such as 0,56 €.
+    const direct = manoManoPriceFromCard(card);
+    if (direct) return direct;
+  }
+  const selectors = [
+    ...(config.priceSelectors || []),
+    "[itemprop='price']",
+    "[data-price]",
+    "[data-testid*='amount']",
+    "meta[property='product:price:amount']",
+    "meta[name='price']"
+  ];
+  const seen = new Set();
+  let fractionFallback = "";
+  for (const selector of selectors) {
+    for (const element of card.matches?.(selector) ? [card] : card.querySelectorAll(selector)) {
+      if (seen.has(element)) continue;
+      seen.add(element);
+      const price = priceFromElement(element, card);
+      if (price) {
+        if (isManoMano) {
+          const corrected = normalizeManoManoPrice(price);
+          if (corrected) return corrected;
+          continue;
+        }
+        if (isFractionOnlyPrice(price)) fractionFallback ||= price;
+        else return price;
+      }
     }
   }
-  const itemProp = card.querySelector("[itemprop='price']");
-  if (itemProp) values.push(itemProp.getAttribute("content") || itemProp.textContent || "");
-  const metaPrice = card.querySelector("meta[property='product:price:amount'], meta[name='price']");
-  if (metaPrice) values.push(metaPrice.getAttribute("content") || "");
-  return normalizePrice(values.find((value) => /\d/.test(value)) || "");
+  // ManoMano sometimes has no stable price class. Scan the whole visible card
+  // only with explicit currency/decimal patterns; never concatenate bare digits.
+  const cardPrice = priceTextCandidates(card)
+    .map(normalizeDecimalPrice)
+    .find(Boolean) || normalizePrice(card.innerText || card.textContent || "");
+  if (isManoMano) return manoManoPriceFromCard(card) || cardPrice;
+  return (cardPrice && !isFractionOnlyPrice(cardPrice)) ? cardPrice : (fractionFallback || cardPrice);
 }
 
 function productsFromJsonLd() {
   const items = [];
-  for (const script of document.querySelectorAll("script[type='application/ld+json']")) {
+  for (const script of document.querySelectorAll("script[type='application/ld+json'], script#__NEXT_DATA__")) {
     try {
       const payload = JSON.parse(script.textContent || "{}");
       const candidates = Array.isArray(payload)
@@ -201,14 +449,21 @@ function productsFromJsonLd() {
         const type = product?.["@type"];
         if (type !== "Product" && product?.name === undefined) continue;
         const offer = Array.isArray(product.offers) ? product.offers[0] : product.offers;
+        const priceSpecification = Array.isArray(offer?.priceSpecification)
+          ? offer.priceSpecification[0]
+          : offer?.priceSpecification;
         const rawImage = Array.isArray(product.image) ? product.image[0] : product.image;
         const image = typeof rawImage === "object" ? rawImage?.url : rawImage;
         const url = product.url || offer?.url;
         if (!product.name || !image || !url) continue;
-        const price = offer?.price ?? offer?.lowPrice ?? product.price;
+        const price = offer?.price
+          ?? offer?.lowPrice
+          ?? priceSpecification?.price
+          ?? product.price;
+        if (!price) continue;
         items.push({
           title: normalizeText(product.name),
-          price: normalizePrice([price, offer?.priceCurrency].filter(Boolean).join(" ")),
+          price: formatRawPrice(price, offer?.priceCurrency || "EUR"),
           imageUrl: cleanImageUrl(image),
           url: new URL(url, location.href).href
         });
@@ -216,6 +471,122 @@ function productsFromJsonLd() {
     } catch {}
   }
   return items;
+}
+
+function offerPriceCandidates(payload) {
+  const candidates = [];
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const type = value["@type"];
+    const isProduct = type === "Product" || (Array.isArray(type) && type.includes("Product"));
+    if (isProduct || value.offers) {
+      const offers = Array.isArray(value.offers) ? value.offers : value.offers ? [value.offers] : [];
+      for (const offer of offers) {
+        const specification = Array.isArray(offer?.priceSpecification)
+          ? offer.priceSpecification[0]
+          : offer?.priceSpecification;
+        const raw = offer?.price ?? offer?.lowPrice ?? specification?.price;
+        if (raw == null) continue;
+        const currency = offer?.priceCurrency || specification?.priceCurrency || value.priceCurrency || "EUR";
+        const formatted = formatRawPrice(raw, currency);
+        const numeric = numericPriceForSelection(formatted);
+        if (formatted && Number.isFinite(numeric)) candidates.push({ formatted, numeric });
+      }
+    }
+    for (const key of ["@graph", "itemListElement", "mainEntity", "product", "offers"]) {
+      if (value[key]) visit(value[key]);
+    }
+  };
+  visit(payload);
+  return candidates;
+}
+
+function priceFromStructuredData(payload) {
+  const candidates = offerPriceCandidates(payload);
+  if (!candidates.length) return "";
+  return candidates.sort((left, right) => right.numeric - left.numeric)[0].formatted;
+}
+
+function priceCandidatesFromText(value) {
+  const text = normalizeText(value).replace(/\u00a0/g, " ");
+  if (!text) return [];
+  const matches = text.match(/(?:[$£€]\s*)?\d[\d.,\s]*\s*(?:€|EUR|CHF|£|GBP|\$|USD|PLN|kr)/gi) || [];
+  return matches.map(normalizePrice).filter(Boolean);
+}
+
+function priceFromDocument(document) {
+  const structured = [];
+  for (const script of document.querySelectorAll("script[type='application/ld+json'], script#__NEXT_DATA__")) {
+    try {
+      const price = priceFromStructuredData(JSON.parse(script.textContent || "{}"));
+      if (price) structured.push(price);
+    } catch {}
+  }
+  const domCandidates = [];
+  const selectors = [
+    "meta[itemprop='price']",
+    "meta[property='product:price:amount']",
+    "[itemprop='price']",
+    "[data-testid*='current-price']",
+    "[data-testid*='product-price']",
+    "[data-testid*='selling-price']",
+    "[class*='current-price']",
+    "[class*='selling-price']",
+    "[class*='product-price']"
+  ];
+  for (const selector of selectors) {
+    for (const element of document.querySelectorAll(selector)) {
+      const raw = element.getAttribute("content") || element.getAttribute("data-price");
+      const price = raw
+        ? formatRawPrice(raw, element.getAttribute("data-currency") || "EUR")
+        : normalizePrice(element.innerText || element.textContent || "");
+      if (price) domCandidates.push(price);
+    }
+  }
+  const all = [...domCandidates, ...structured, ...priceCandidatesFromText(document.body?.innerText || document.body?.textContent || "")];
+  const complete = all.filter((price) => numericPriceForSelection(price) >= 1);
+  // A bare 0,56 is a fractional DOM helper value, not the product price.
+  // Never return it as a fallback.
+  return complete[0] || "";
+}
+
+function numericPriceForSelection(value) {
+  const match = String(value || "").match(/\d[\d.,]*/);
+  if (!match) return 0;
+  const formatted = formatRawPrice(match[0]);
+  return formatted ? Number(formatted.replace(",", ".").replace(/\.(?=.*\.)/g, "")) : 0;
+}
+
+async function fetchProductPrice(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(url, { credentials: "include", signal: controller.signal });
+    if (!response.ok) return "";
+    const html = await response.text();
+    return priceFromDocument(new DOMParser().parseFromString(html, "text/html"));
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function enrichPrices(items, overwrite = false) {
+  const pending = items.filter((item) => (overwrite || !item.price) && item.url).slice(0, 80);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < pending.length) {
+      const item = pending[cursor++];
+      const price = await fetchProductPrice(item.url);
+      if (price) item.price = price;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(6, pending.length) }, worker));
 }
 
 function cardList() {
@@ -346,7 +717,7 @@ function collectNow() {
 function collectGenericNow(config) {
   const cards = genericCardList(config);
   const items = [];
-  const seen = new Set();
+  const byIdentity = new Map();
   const query = extractSearchKeyword();
 
   for (const card of cards) {
@@ -358,9 +729,7 @@ function collectGenericNow(config) {
     if (!title || !link) continue;
     const absoluteLink = new URL(link, location.href).href;
     const identity = itemIdentityKey(absoluteLink);
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    items.push({
+    const item = {
       rank: items.length + 1,
       title,
       price: genericPriceFromCard(card, config),
@@ -371,7 +740,18 @@ function collectGenericNow(config) {
       imageUrlLarge: image,
       url: absoluteLink,
       query
-    });
+    };
+    const existing = byIdentity.get(identity);
+    if (existing) {
+      if (!existing.price && item.price) existing.price = item.price;
+      if (!existing.imageUrl && item.imageUrl) {
+        existing.imageUrl = item.imageUrl;
+        existing.imageUrlLarge = item.imageUrlLarge;
+      }
+    } else {
+      items.push(item);
+      byIdentity.set(identity, item);
+    }
   }
 
   // JSON-LD often contains products that have not been mounted into the
@@ -379,17 +759,27 @@ function collectGenericNow(config) {
   // when the card query returns zero items.
   for (const product of productsFromJsonLd()) {
     const identity = itemIdentityKey(product.url);
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    items.push({
+    const existing = byIdentity.get(identity);
+    if (existing) {
+      if (!config.detailPriceOnly && !existing.price && product.price) existing.price = product.price;
+      if (!existing.imageUrl && product.imageUrl) {
+        existing.imageUrl = product.imageUrl;
+        existing.imageUrlLarge = product.imageUrl;
+      }
+      continue;
+    }
+    const item = {
       rank: items.length + 1,
       ...product,
+      price: config.detailPriceOnly ? "" : product.price,
       shipping: "",
       condition: "",
       seller: "",
       imageUrlLarge: product.imageUrl,
       query
-    });
+    };
+    items.push(item);
+    byIdentity.set(identity, item);
   }
 
   return {
@@ -405,6 +795,7 @@ function collectGenericNow(config) {
     diagnostics: {
       pageTitle: document.title,
       titleCount: cards.filter((card) => genericTitleFromCard(card, config)).length,
+      priceCount: items.filter((item) => item.price).length,
       imageCount: cards.reduce((count, card) => count + card.querySelectorAll("img").length, 0),
       itemLinkCount: cards.filter((card) => genericLinkFromCard(card, config)).length,
       jsonLdFallback: !cards.length || !items.length
@@ -734,7 +1125,12 @@ async function collectFirstPage() {
   const marketplace = marketplaceForLocation();
   if (!marketplace) return { ok: false, error: "暂不支持该平台" };
   if (marketplace.priceOnly) {
-    return collectWithScrolling(() => collectGenericNow(marketplace), marketplace);
+    const result = await collectWithScrolling(() => collectGenericNow(marketplace), marketplace);
+    // ManoMano's result-card DOM can split the amount into misleading hidden
+    // digits. Its product page structured data is the authoritative fallback.
+    await enrichPrices(result.items, false);
+    result.diagnostics.priceCount = result.items.filter((item) => item.price).length;
+    return result;
   }
   // eBay also hydrates and virtualises result cards while scrolling.
   return collectWithScrolling(collectNow, marketplace);
