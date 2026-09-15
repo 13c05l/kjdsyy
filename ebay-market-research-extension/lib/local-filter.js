@@ -35,6 +35,36 @@ function toGrayscale(pixels, size) {
   return gray;
 }
 
+/**
+ * Separable [1 2 1] blur.
+ *
+ * Listing thumbnails are heavily JPEG-compressed; the blocky high-frequency
+ * noise otherwise produces spurious gradient votes that differ between two
+ * photos of the same item. Two cheap 1-D passes approximate a Gaussian.
+ */
+export function blurGrayscale(gray, size) {
+  const horizontal = new Float32Array(gray.length);
+  for (let y = 0; y < size; y += 1) {
+    const row = y * size;
+    for (let x = 0; x < size; x += 1) {
+      const left = gray[row + Math.max(0, x - 1)];
+      const middle = gray[row + x];
+      const right = gray[row + Math.min(size - 1, x + 1)];
+      horizontal[row + x] = (left + 2 * middle + right) / 4;
+    }
+  }
+  const output = new Float32Array(gray.length);
+  for (let y = 0; y < size; y += 1) {
+    const up = Math.max(0, y - 1) * size;
+    const middle = y * size;
+    const down = Math.min(size - 1, y + 1) * size;
+    for (let x = 0; x < size; x += 1) {
+      output[middle + x] = (horizontal[up + x] + 2 * horizontal[middle + x] + horizontal[down + x]) / 4;
+    }
+  }
+  return output;
+}
+
 function isBackground(r, g, b) {
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
@@ -110,7 +140,7 @@ export function normalizeFraming(pixels, size, target = GRID) {
  * (lighting, JPEG quality) do not dominate.
  */
 export function gradientFeature(pixels, size = GRID) {
-  const gray = toGrayscale(pixels, size);
+  const gray = blurGrayscale(toGrayscale(pixels, size), size);
   const cellsPerSide = size / CELL;
   const feature = new Float32Array(cellsPerSide * cellsPerSide * BINS);
 
@@ -142,7 +172,20 @@ export function gradientFeature(pixels, size = GRID) {
     }
   }
 
-  for (let cell = 0; cell < cellsPerSide * cellsPerSide; cell += 1) {
+  normalizeCells(feature, cellsPerSide);
+  return feature;
+}
+
+/**
+ * Per-cell L2 followed by 2x2 block normalisation (averaged over overlapping
+ * blocks). Cell-only normalisation leaves a cell's response hostage to the
+ * contrast of its own little patch; blocks let strong neighbouring edges share
+ * the norm, which is what makes classic HOG robust to lighting and JPEG
+ * quality differences between two photos of the same product.
+ */
+function normalizeCells(feature, cellsPerSide) {
+  const cells = cellsPerSide * cellsPerSide;
+  for (let cell = 0; cell < cells; cell += 1) {
     const base = cell * BINS;
     let sumSquares = 0;
     for (let bin = 0; bin < BINS; bin += 1) sumSquares += feature[base + bin] ** 2;
@@ -150,7 +193,33 @@ export function gradientFeature(pixels, size = GRID) {
     for (let bin = 0; bin < BINS; bin += 1) feature[base + bin] /= norm;
   }
 
-  return feature;
+  const accumulated = new Float32Array(feature.length);
+  const counts = new Float32Array(cells);
+  for (let blockY = 0; blockY + 1 < cellsPerSide; blockY += 1) {
+    for (let blockX = 0; blockX + 1 < cellsPerSide; blockX += 1) {
+      const indices = [];
+      let sumSquares = 0;
+      for (let dy = 0; dy <= 1; dy += 1) {
+        for (let dx = 0; dx <= 1; dx += 1) {
+          const cell = (blockY + dy) * cellsPerSide + (blockX + dx);
+          indices.push(cell);
+          const base = cell * BINS;
+          for (let bin = 0; bin < BINS; bin += 1) sumSquares += feature[base + bin] ** 2;
+        }
+      }
+      const norm = Math.sqrt(sumSquares) || 1;
+      for (const cell of indices) {
+        const base = cell * BINS;
+        for (let bin = 0; bin < BINS; bin += 1) accumulated[base + bin] += feature[base + bin] / norm;
+        counts[cell] += 1;
+      }
+    }
+  }
+  for (let cell = 0; cell < cells; cell += 1) {
+    const share = counts[cell] || 1;
+    const base = cell * BINS;
+    for (let bin = 0; bin < BINS; bin += 1) feature[base + bin] = accumulated[base + bin] / share;
+  }
 }
 
 /**
@@ -220,7 +289,17 @@ export function featureSimilarity(reference, candidate) {
   if (!reference || !candidate) return 0;
   const shape = cosineSimilarity(reference.gradient, candidate.gradient);
   const color = histogramSimilarity(reference.color.buckets, candidate.color.buckets);
-  return Math.max(0, Math.min(1, shape * SHAPE_WEIGHT + color * COLOR_WEIGHT));
+  const combined = Math.max(0, Math.min(1, shape * SHAPE_WEIGHT + color * COLOR_WEIGHT));
+  // Two products of different proportions (a tall narrow bottle vs a squat
+  // box) keep similar HOG responses on their respective edges, so the aspect
+  // ratio of the cropped subject adds a cheap, rotation-free discriminator.
+  return combined * aspectAgreement(reference.aspect, candidate.aspect);
+}
+
+export function aspectAgreement(left, right) {
+  if (!Number.isFinite(left) || !Number.isFinite(right) || left <= 0 || right <= 0) return 1;
+  const logRatio = Math.abs(Math.log(left / right));
+  return Math.exp(-0.7 * logRatio);
 }
 
 export async function extractFeatures(dataUrl) {
@@ -228,9 +307,12 @@ export async function extractFeatures(dataUrl) {
   // Crop to the product and rescale before measuring, so zoom level does not
   // change the result.
   const pixels = normalizeFraming(raw, GRID, GRID);
+  const bounds = contentBounds(raw, GRID);
+  const aspect = bounds.empty ? 1 : bounds.width / bounds.height;
   return {
     gradient: gradientFeature(pixels, GRID),
-    color: colorFeature(pixels)
+    color: colorFeature(pixels),
+    aspect
   };
 }
 

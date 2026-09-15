@@ -5,7 +5,9 @@ import { gradientFeature, colorFeature, cosineSimilarity, histogramSimilarity, f
 import { endpointUrl, apiModeFor, parseJsonObject, modelText, buildRequestBody } from "./lib/api.js";
 import { parseScoreReply, weightedTotal, normalizeVerdict, runPool } from "./lib/vision.js";
 import { ebayImageUrlAtSize } from "./lib/image.js";
-import { textScore, blendScore, combineVisionScore, TEXT_WEIGHT, IMAGE_WEIGHT, LOCAL_WEIGHT, VISION_WEIGHT } from "./lib/text-match.js";
+import { textScore, blendScore, combineVisionScore, composeFinalScore, parsePriceNumber, priceScore, TEXT_WEIGHT, IMAGE_WEIGHT, LOCAL_WEIGHT, VISION_WEIGHT, FINAL_WEIGHTS, VERDICT_ADJUSTMENT } from "./lib/text-match.js";
+import { aspectAgreement, blurGrayscale } from "./lib/local-filter.js";
+import { DIMENSIONS } from "./lib/vision.js";
 
 let passed = 0;
 let failed = 0;
@@ -120,14 +122,15 @@ check("Responses 文本", modelText({ output_text: "hi" }) === "hi");
 const contextualBody = buildRequestBody({ mode: "chat", model: "vision", instruction: "判断", referenceImage: "data:a", candidateImage: "data:b", referenceTitle: "三路电动猫玩具", keywords: "USB, 遥控, 三路", candidateTitle: "Elektrisch Interaktives Katzenspielzeug", candidateDetails: "Drei motorisierte Spielzeuge mit Fernbedienung und USB-Ladefunktion" });
 check("标题和详情传入模型上下文", contextualBody.messages[0].content[0].text.includes("Drei motorisierte") && contextualBody.messages[0].content[0].text.includes("三路电动猫玩具"));
 
-section("六维打分");
-const reply = parseScoreReply('{"productType":90,"function":80,"shape":70,"structure":60,"material":50,"cost":40,"verdict":"同款","reason":"类型和功能一致"}');
+section("七维打分");
+const reply = parseScoreReply('{"productType":90,"function":80,"identity":70,"shape":70,"structure":60,"material":50,"cost":40,"verdict":"同款","reason":"类型和功能一致"}');
 check("归一到 0-1", Math.abs(reply.scores.productType - 0.9) < 1e-9);
-check("加权总分", Math.abs(reply.visionScore - (0.9 * 0.25 + 0.8 * 0.25 + 0.7 * 0.20 + 0.6 * 0.15 + 0.5 * 0.10 + 0.4 * 0.05)) < 1e-9,
+check("identity 归一到 0-1", Math.abs(reply.scores.identity - 0.7) < 1e-9);
+check("加权总分", Math.abs(reply.visionScore - (0.9 * 0.20 + 0.8 * 0.20 + 0.7 * 0.15 + 0.7 * 0.15 + 0.6 * 0.12 + 0.5 * 0.10 + 0.4 * 0.08)) < 1e-9,
   `=${reply.visionScore.toFixed(4)}`);
 check("判断标签", reply.verdict === "同款");
-check("越界夹紧", parseScoreReply('{"productType":150,"function":-20,"shape":50,"structure":50,"material":50,"cost":50}').scores.productType === 1);
-check("缺项按剩余权重归一", Math.abs(weightedTotal({ productType: 1, function: null, shape: null, structure: null, material: null, cost: null }) - 1) < 1e-9);
+check("越界夹紧", parseScoreReply('{"productType":150,"function":-20,"identity":50,"shape":50,"structure":50,"material":50,"cost":50}').scores.productType === 1);
+check("旧数据缺 identity 不拖垮总分", Math.abs(weightedTotal({ productType: 1, function: 1, identity: null, shape: 1, structure: 1, material: 1, cost: 1 }) - 1) < 1e-9);
 check("非法标签丢弃", normalizeVerdict("胡说") === "");
 check("同功能相似款标签", normalizeVerdict("同功能相似款") === "同功能相似款");
 check("全无效分数抛错", (() => { try { parseScoreReply('{"verdict":"同款"}'); return false; } catch { return true; } })());
@@ -163,6 +166,47 @@ const fatal = await runPool([1, 2, 3], async () => {
   throw error;
 }, { concurrency: 1 }).then(() => "没抛错").catch((error) => error.message);
 check("致命错误中断整批", fatal === "401");
+
+section("综合分融合");
+check("四信号权重和为 1", Math.abs(Object.values(FINAL_WEIGHTS).reduce((sum, weight) => sum + weight, 0) - 1) < 1e-9);
+check("七维权重和为 1", Math.abs(DIMENSIONS.reduce((sum, dimension) => sum + dimension.weight, 0) - 1) < 1e-9);
+const full = composeFinalScore({ localScore: 0.5, textScore: 1, visionScore: 0.6, priceScore: 0.8 });
+const fullExpected = 0.6 * 0.5 + 1 * 0.24 + 0.5 * 0.16 + 0.8 * 0.1;
+check("四信号按 50/24/16/10 融合", Math.abs(full - fullExpected) < 1e-9, `=${full.toFixed(4)}`);
+const noVision = composeFinalScore({ localScore: 0.5, textScore: 1 });
+check("无视觉时退回文本 0.6 / 粗筛 0.4", Math.abs(noVision - 0.8) < 1e-9, `=${noVision.toFixed(4)}`);
+check("缺价格时按剩余权重归一", Math.abs(composeFinalScore({ localScore: 0.5, textScore: 1, visionScore: 0.6 })
+  - (0.6 * 0.5 + 1 * 0.24 + 0.5 * 0.16) / 0.9) < 1e-9);
+check("同款判定上浮", composeFinalScore({ localScore: 0.5, textScore: 1, visionScore: 0.6, verdict: "同款" })
+  === Math.min(1, ((0.6 * 0.5 + 1 * 0.24 + 0.5 * 0.16) / 0.9) * VERDICT_ADJUSTMENT["同款"]));
+const unrelated = composeFinalScore({ localScore: 0.5, textScore: 1, visionScore: 0.6, verdict: "不相关" });
+check("不相关判定大幅下调", unrelated < composeFinalScore({ localScore: 0.5, textScore: 1, visionScore: 0.6 }), `=${unrelated.toFixed(3)}`);
+check("上浮后夹紧到 1", composeFinalScore({ localScore: 1, textScore: 1, visionScore: 1, verdict: "同款" }) === 1);
+check("无任何信号返回 null", composeFinalScore({}) === null);
+
+section("价格相似度");
+check("德式价格 1.299,00 €", parsePriceNumber("1.299,00 €") === 1299.0);
+check("德式价格 EUR 12,99", parsePriceNumber("EUR 12,99") === 12.99);
+check("英式价格 $1,299.00", parsePriceNumber("$1,299.00") === 1299.0);
+check("纯数字", parsePriceNumber("29.99") === 29.99);
+check("无价格返回 null", parsePriceNumber("免费") === null && parsePriceNumber("") === null);
+check("同价满分", priceScore(29.99, "29,99 EUR") === 1);
+check("价格接近高分", priceScore(100, 110) > 0.5 && priceScore(100, 110) < 0.8, `=${priceScore(100, 110).toFixed(3)}`);
+check("价格悬殊低分", priceScore(100, 300) < 0.2, `=${priceScore(100, 300).toFixed(4)}`);
+check("缺参考价返回 null", priceScore(0, 100) === null && priceScore(null, "10 €") === null);
+
+section("粗筛新特征");
+check("长宽比一致不惩罚", aspectAgreement(1.5, 1.5) === 1);
+check("长宽比接近轻微惩罚", aspectAgreement(1.5, 1.2) > 0.8 && aspectAgreement(1.5, 1.2) < 0.95);
+check("长宽比悬殊明显惩罚", aspectAgreement(2, 0.5) < 0.5, `=${aspectAgreement(2, 0.5).toFixed(3)}`);
+check("长宽比缺失不惩罚", aspectAgreement(undefined, 1) === 1);
+const flat = new Float32Array(16).fill(0.5);
+const blurred = blurGrayscale(flat, 4);
+check("模糊不改变平坦区域", [...blurred].every((value) => Math.abs(value - 0.5) < 1e-6));
+const spike = new Float32Array(16).fill(0);
+spike[5] = 1;
+const spread = blurGrayscale(spike, 4);
+check("模糊把孤点摊开", spread[5] < 1 && spread[1] > 0 && spread[9] > 0);
 
 console.log(`\n${failed === 0 ? "全部通过" : "有失败"}：${passed} 通过，${failed} 失败`);
 process.exit(failed === 0 ? 0 : 1);

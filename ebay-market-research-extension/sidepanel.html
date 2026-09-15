@@ -95,8 +95,12 @@
             关键词
             <input id="referenceKeywords" type="text" placeholder="如：wireless charger, 15W, black">
           </label>
+          <label>
+            参考价格
+            <input id="referencePrice" type="text" placeholder="如：29.99 或 29,99，用于价格相似度加权">
+          </label>
         </div>
-        <div class="hint">最终综合分：本地粗筛 40% + 视觉模型 60%；标题和关键词用于辅助判断。</div>
+        <div class="hint">综合分按可用信号加权：视觉 50% + 标题关键词 24% + 图像粗筛 16% + 价格 10%；「同款」判定上浮、「不相关」下调。模型会读取图上品牌/型号文字辅助判断。</div>
       </section>
 
       <section class="panel">

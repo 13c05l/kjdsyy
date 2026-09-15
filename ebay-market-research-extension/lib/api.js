@@ -73,17 +73,20 @@ export function parseJsonObject(text) {
   return JSON.parse(candidate.slice(start, end + 1));
 }
 
-export function buildRequestBody({ mode, model, instruction, referenceImage, candidateImage, referenceTitle = "", keywords = "", candidateTitle = "", candidateDetails = "" }) {
+export function buildRequestBody({ mode, model, instruction, referenceImage, candidateImage, referenceTitle = "", keywords = "", candidateTitle = "", candidateDetails = "", referencePrice = "", candidatePrice = "", temperature }) {
   const context = [
     referenceTitle ? "参考商品标题：" + referenceTitle : "",
+    referencePrice ? "参考商品价格：" + referencePrice : "",
     keywords ? "参考关键词：" + keywords : "",
     candidateTitle ? "候选商品标题：" + candidateTitle : "",
+    candidatePrice ? "候选商品价格：" + candidatePrice : "",
     candidateDetails ? "候选商品详情摘要：" + candidateDetails : ""
   ].filter(Boolean).join("\n");
   const prompt = context ? instruction + "\n\n" + context : instruction;
   if (mode === "responses") {
     return {
       model,
+      ...(Number.isFinite(temperature) ? { temperature } : {}),
       input: [
         {
           role: "user",
@@ -100,6 +103,7 @@ export function buildRequestBody({ mode, model, instruction, referenceImage, can
   }
   return {
     model,
+    ...(Number.isFinite(temperature) ? { temperature } : {}),
     messages: [
       {
         role: "user",

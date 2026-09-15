@@ -8,12 +8,13 @@
 import { endpointUrl, apiModeFor, modelText, parseJsonObject, buildRequestBody, isFatalStatus } from "./api.js";
 
 export const DIMENSIONS = [
-  { key: "productType", label: "产品类型", weight: 0.25 },
-  { key: "function", label: "核心功能", weight: 0.25 },
-  { key: "shape", label: "外形", weight: 0.20 },
-  { key: "structure", label: "结构", weight: 0.15 },
-  { key: "material", label: "材质", weight: 0.10 },
-  { key: "cost", label: "成本", weight: 0.05 }
+  { key: "productType", label: "产品类型", weight: 0.2 },
+  { key: "function", label: "核心功能", weight: 0.2 },
+  { key: "identity", label: "品牌标识", weight: 0.15 },
+  { key: "shape", label: "外形", weight: 0.15 },
+  { key: "structure", label: "结构", weight: 0.12 },
+  { key: "material", label: "材质", weight: 0.1 },
+  { key: "cost", label: "成本", weight: 0.08 }
 ];
 
 export const VERDICTS = ["同款", "高仿款", "同功能相似款", "不相关"];
@@ -24,22 +25,27 @@ const INSTRUCTION = [
   "同款：主体外观、关键组件布局和功能方案基本一致。",
   "同功能相似款：属于同一细分产品、解决同一使用场景、核心功能和组件方案相近，但外观或结构明显不同。",
   "例如：参考图是三路电动猫追逐玩具，候选也是多路电动猫追逐玩具，即使外壳、轨道布局不同，也应给较高的产品类型和核心功能分，并判为同功能相似款，不应判为不相关。",
-  "颜色不同但其余一致，仍算同款。",
+  "颜色不同但其余一致，仍算同款；同型号不同颜色/尺寸/套装数量也按同款处理，并在 reason 里注明差异。",
+  "",
+  "仔细观察商品本体和包装上可读的文字与图案：品牌名、logo、型号、规格参数（如功率 W、电压 V、数量、容量）。这些是判断是否同款的关键证据。",
+  "identity 品牌标识：logo、品牌字样、型号文字、包装印刷是否指向同一品牌/型号。图片上没有任何可读文字或看不到 logo 时，给 55-65 的中性分并在 reason 注明「未读到文字」，不要凭空给 0 或 100。",
+  "候选商品标题里出现的型号/参数若与图片上读到的文字互相印证，identity 应给高分。",
   "如果任一图片是网页截图，请忽略浏览器边框、页面文字、水印和按钮，只看核心商品本体。",
   "商品标题和关键词是辅助证据，图片是主要证据；标题不能单独决定同款。",
   "",
-  "请分别给出六项 0-100 的评分：",
+  "请分别给出七项 0-100 的评分：",
   "productType 产品类型：是否属于同一细分产品，而不是只看宠物用品这个大类",
   "function 核心功能：电动方式、运动/互动方式、控制方式、组件数量和使用场景是否相近",
+  "identity 品牌标识：可见的 logo、型号、规格文字是否一致；无文字时给中性分",
   "shape 外形轮廓：整体形状和比例是否接近；同功能不同外壳不应因此判为不相关",
   "structure 结构细节：关键部件、连接方式和布局是否相同；不同设计允许得到中等分",
   "material 材质观感：表面质感、光泽、材料类型是否接近",
   "cost 成本档次：做工精细度和价位区间是否相当",
   "",
   "verdict 只能是以下四种之一：同款 / 高仿款 / 同功能相似款 / 不相关",
-  "reason 用中文说明判断依据，不超过 40 字，必须同时指出产品类型/功能和外观结构差异。",
+  "reason 用中文说明判断依据，不超过 40 字，必须同时指出产品类型/功能、品牌标识（或未读到文字）和外观结构差异。",
   "",
-  '严格返回 JSON 对象，不要任何额外文字：{"productType":数字,"function":数字,"shape":数字,"structure":数字,"material":数字,"cost":数字,"verdict":"同功能相似款","reason":"文字"}'
+  '严格返回 JSON 对象，不要任何额外文字：{"productType":数字,"function":数字,"identity":数字,"shape":数字,"structure":数字,"material":数字,"cost":数字,"verdict":"同功能相似款","reason":"文字"}'
 ].join("\n");
 
 function clampScore(value) {
@@ -87,10 +93,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const REQUEST_TIMEOUT_MS = 20000;
 
 /** Score one candidate. Retries transient failures, gives up fast on fatal ones. */
-export async function scorePair({ referenceImage, candidateImage, settings, signal, referenceTitle = "", keywords = "", candidateTitle = "", candidateDetails = "", retries = 0 }) {
+export async function scorePair({ referenceImage, candidateImage, settings, signal, referenceTitle = "", keywords = "", candidateTitle = "", candidateDetails = "", referencePrice = "", candidatePrice = "", retries = 0 }) {
   const mode = apiModeFor(settings.endpoint, settings.apiMode || "auto");
   const url = endpointUrl(settings.endpoint, settings.apiMode || "auto");
-  const body = buildRequestBody({
+  const buildBody = (withTemperature) => buildRequestBody({
     mode,
     model: settings.model,
     instruction: INSTRUCTION,
@@ -99,10 +105,17 @@ export async function scorePair({ referenceImage, candidateImage, settings, sign
     referenceTitle,
     keywords,
     candidateTitle,
-    candidateDetails
+    candidateDetails,
+    referencePrice,
+    candidatePrice,
+    temperature: withTemperature ? 0 : undefined
   });
 
   let lastError;
+  // temperature: 0 makes repeated runs of the same pair agree. A few strict
+  // gateways reject the field outright; drop it once and carry on instead of
+  // failing the whole batch.
+  let useTemperature = true;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     if (signal?.aborted) throw new DOMException("已停止", "AbortError");
     try {
@@ -116,7 +129,7 @@ export async function scorePair({ referenceImage, candidateImage, settings, sign
         response = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
-          body: JSON.stringify(body),
+          body: JSON.stringify(buildBody(useTemperature)),
           signal: timeoutController.signal
         });
         raw = await response.text();
@@ -138,6 +151,11 @@ export async function scorePair({ referenceImage, candidateImage, settings, sign
 
       if (!response.ok) {
         const detail = payload.error?.message || raw.slice(0, 200) || `HTTP ${response.status}`;
+        if (response.status === 400 && useTemperature && /temperature/i.test(detail)) {
+          useTemperature = false;
+          attempt -= 1; // the probe does not consume one of the retries
+          continue;
+        }
         const error = new Error(`接口失败 ${response.status}：${detail}`);
         error.status = response.status;
         error.fatal = isFatalStatus(response.status);

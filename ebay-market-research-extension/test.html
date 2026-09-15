@@ -215,18 +215,19 @@
       modelText({ choices: [{ message: { content: "hi" } }] }) === "hi");
     check("读取 Responses 文本", modelText({ output_text: "hi" }) === "hi");
 
-    section("六维打分");
+    section("七维打分");
 
-    const reply = parseScoreReply('{"productType":90,"function":80,"shape":70,"structure":60,"material":50,"cost":40,"verdict":"同功能相似款","reason":"类型功能一致，结构不同"}');
+    const reply = parseScoreReply('{"productType":90,"function":80,"identity":70,"shape":70,"structure":60,"material":50,"cost":40,"verdict":"同功能相似款","reason":"类型功能一致，结构不同"}');
     check("分数归一到 0-1", Math.abs(reply.scores.productType - 0.9) < 1e-9);
+    check("identity 分数归一到 0-1", Math.abs(reply.scores.identity - 0.7) < 1e-9);
     check("加权总分正确",
-      Math.abs(reply.visionScore - (0.9 * 0.25 + 0.8 * 0.25 + 0.7 * 0.20 + 0.6 * 0.15 + 0.5 * 0.10 + 0.4 * 0.05)) < 1e-9,
+      Math.abs(reply.visionScore - (0.9 * 0.20 + 0.8 * 0.20 + 0.7 * 0.15 + 0.7 * 0.15 + 0.6 * 0.12 + 0.5 * 0.10 + 0.4 * 0.08)) < 1e-9,
       `=${reply.visionScore.toFixed(4)}`);
     check("判断标签保留", reply.verdict === "同功能相似款");
     check("越界分数被夹紧",
-      parseScoreReply('{"productType":150,"function":-20,"shape":50,"structure":50,"material":50,"cost":50}').scores.productType === 1);
+      parseScoreReply('{"productType":150,"function":-20,"identity":50,"shape":50,"structure":50,"material":50,"cost":50}').scores.productType === 1);
     check("缺项时按剩余权重归一", (() => {
-      const partial = weightedTotal({ productType: 1, function: null, shape: null, structure: null, material: null, cost: null });
+      const partial = weightedTotal({ productType: 1, function: 1, identity: null, shape: 1, structure: 1, material: 1, cost: 1 });
       return Math.abs(partial - 1) < 1e-9;
     })());
    check("非法判断标签被丢弃", normalizeVerdict("胡说") === "");

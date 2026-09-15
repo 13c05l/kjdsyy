@@ -2,7 +2,7 @@ import { downloadXlsx } from "./xlsx.js";
 import { readFileAsDataUrl, resizeDataUrl, fetchImageBlob, bitmapFromBlob, bitmapToDataUrl } from "./lib/image.js";
 import { extractFeatures, featureSimilarity, applyThreshold, thresholdFor } from "./lib/local-filter.js";
 import { scorePair, runPool, DIMENSIONS } from "./lib/vision.js";
-import { textScore, blendScore, combineVisionScore } from "./lib/text-match.js";
+import { textScore, composeFinalScore, parsePriceNumber, priceScore } from "./lib/text-match.js";
 import { originPatternFor } from "./lib/api.js";
 import { parseProductDataFile } from "./lib/data-import.js";
 
@@ -15,6 +15,7 @@ const state = {
   referenceDataUrl: "",
   referenceTitle: "",
   referenceKeywords: "",
+  referencePrice: 0,
   productData: { fileName: "", headers: [], rows: [] },
   controller: null,
   running: false
@@ -462,15 +463,19 @@ async function loadReference() {
   const meta = (await chrome.storage.local.get(REFERENCE_META_KEY))[REFERENCE_META_KEY] || {};
   state.referenceTitle = String(meta.title || "");
   state.referenceKeywords = String(meta.keywords || "");
+  state.referencePrice = parsePriceNumber(meta.price) || 0;
   $("#referenceTitle").value = state.referenceTitle;
   $("#referenceKeywords").value = state.referenceKeywords;
+  $("#referencePrice").value = meta.price || "";
 }
 
 function saveReferenceMeta() {
+  const priceText = $("#referencePrice").value.trim();
   state.referenceTitle = $("#referenceTitle").value.trim();
   state.referenceKeywords = $("#referenceKeywords").value.trim();
+  state.referencePrice = parsePriceNumber(priceText) || 0;
   chrome.storage.local.set({
-    [REFERENCE_META_KEY]: { title: state.referenceTitle, keywords: state.referenceKeywords }
+    [REFERENCE_META_KEY]: { title: state.referenceTitle, keywords: state.referenceKeywords, price: priceText }
   }).catch(() => {});
 }
 
@@ -590,8 +595,10 @@ function renderInto(node, item) {
     : "";
 
   const scoreHints = [];
+  if (Number.isFinite(item.visionScore)) scoreHints.push(`视觉 ${Math.round(item.visionScore * 100)}%`);
   if (Number.isFinite(item.localScore)) scoreHints.push(`图像粗筛 ${Math.round(item.localScore * 100)}%`);
   if (Number.isFinite(item.textScore)) scoreHints.push(`标题关键词 ${Math.round(item.textScore * 100)}%`);
+  if (Number.isFinite(item.priceScore)) scoreHints.push(`价格 ${Math.round(item.priceScore * 100)}%`);
   const reason = item.reason || item.error || (item.status === "pending" ? "等待识别…" : "");
 
   node.innerHTML = `
@@ -686,13 +693,19 @@ async function parallelLocalPass(items, settings, reference) {
       keywords: state.referenceKeywords,
       candidateTitle: item.title
     });
+    const candidatePriceScore = priceScore(state.referencePrice, item.price);
     return {
       ...item,
       localScore,
       textScore: candidateTextScore,
+      priceScore: candidatePriceScore,
       candidateImageSource,
       visionImageDataUrl: "",
-      finalScore: blendScore(localScore, candidateTextScore)
+      finalScore: composeFinalScore({
+        localScore,
+        textScore: candidateTextScore,
+        priceScore: candidatePriceScore
+      })
     };
   };
   const settled = await runPool(items, worker, {
@@ -707,7 +720,7 @@ async function parallelLocalPass(items, settings, reference) {
   });
   const scored = settled.map((entry, index) => entry?.ok
     ? entry.value
-    : { ...items[index], localScore: null, textScore: null, candidateImageSource: null, visionImageDataUrl: "", finalScore: null });
+    : { ...items[index], localScore: null, textScore: null, priceScore: null, candidateImageSource: null, visionImageDataUrl: "", finalScore: null });
   if (state.controller.signal.aborted) {
     for (const entry of scored) entry.candidateImageSource?.close?.();
     throw new DOMException("已停止", "AbortError");
@@ -784,6 +797,8 @@ async function visionPass(candidates, settings, progress = { done: 0, total: can
       keywords: state.referenceKeywords,
       candidateTitle: item.title,
       candidateDetails: item.details || "",
+      referencePrice: state.referencePrice || "",
+      candidatePrice: parsePriceNumber(item.price) || "",
       retries: settings.autoRetry ? settings.retryCount : 0,
       signal: state.controller.signal
     });
@@ -800,6 +815,7 @@ async function visionPass(candidates, settings, progress = { done: 0, total: can
         keywords: state.referenceKeywords,
         candidateTitle: item.title
       });
+      const candidatePriceScore = priceScore(state.referencePrice, item.price);
       Object.assign(target, {
         status: "done",
         scores: result.value.scores,
@@ -807,7 +823,14 @@ async function visionPass(candidates, settings, progress = { done: 0, total: can
         verdict: result.value.verdict,
         reason: result.value.reason,
         textScore: candidateTextScore,
-        finalScore: combineVisionScore(target.localScore, result.value.visionScore),
+        priceScore: candidatePriceScore,
+        finalScore: composeFinalScore({
+          localScore: target.localScore,
+          textScore: candidateTextScore,
+          priceScore: candidatePriceScore,
+          visionScore: result.value.visionScore,
+          verdict: result.value.verdict
+        }),
         error: ""
       });
     } else {
@@ -1037,6 +1060,8 @@ async function retryOne(rank) {
       keywords: state.referenceKeywords,
       candidateTitle: item.title,
       candidateDetails: item.details || "",
+      referencePrice: state.referencePrice || "",
+      candidatePrice: parsePriceNumber(item.price) || "",
       retries: settings.autoRetry ? settings.retryCount : 0
     });
     const candidateTextScore = textScore({
@@ -1044,6 +1069,7 @@ async function retryOne(rank) {
       keywords: state.referenceKeywords,
       candidateTitle: item.title
     });
+    const candidatePriceScore = priceScore(state.referencePrice, item.price);
     Object.assign(item, {
       status: "done",
       scores: result.scores,
@@ -1051,7 +1077,14 @@ async function retryOne(rank) {
       verdict: result.verdict,
       reason: result.reason,
       textScore: candidateTextScore,
-      finalScore: combineVisionScore(item.localScore, result.visionScore),
+      priceScore: candidatePriceScore,
+      finalScore: composeFinalScore({
+        localScore: item.localScore,
+        textScore: candidateTextScore,
+        priceScore: candidatePriceScore,
+        visionScore: result.visionScore,
+        verdict: result.verdict
+      }),
       error: ""
     });
   } catch (error) {
@@ -1150,6 +1183,7 @@ async function initialize() {
   });
   $("#referenceTitle").addEventListener("input", saveReferenceMeta);
   $("#referenceKeywords").addEventListener("input", saveReferenceMeta);
+  $("#referencePrice").addEventListener("input", saveReferenceMeta);
   $("#referenceImage").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;

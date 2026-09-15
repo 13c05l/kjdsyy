@@ -188,3 +188,98 @@ export function combineVisionScore(localScore, visionScore) {
   if (hasLocal) return localScore;
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Final score composition.
+//
+// The image-only pipeline cannot separate two products that look alike (same
+// shell, different wattage / piece count / brand). Titles and keywords carry
+// exactly that signal, so they keep a permanent seat in the final score
+// instead of being dropped once the vision model has spoken. Price is the
+// remaining cheap signal: the same model rarely sells at twice the price.
+
+// Base weights; each present signal is renormalised over the weights of the
+// signals that actually have a value, so a missing input never drags scores.
+export const FINAL_WEIGHTS = {
+  vision: 0.5,
+  text: 0.24,
+  local: 0.16,
+  price: 0.1
+};
+
+// Verdicts reorder near-ties: a confirmed same item outranks a lookalike even
+// at equal raw scores, and an "unrelated" verdict should not sit above real
+// matches just because the model scored it generously.
+export const VERDICT_ADJUSTMENT = {
+  "同款": 1.06,
+  "高仿款": 0.96,
+  "同功能相似款": 0.88,
+  "不相关": 0.45
+};
+
+export function verdictAdjustment(verdict) {
+  return VERDICT_ADJUSTMENT[verdict] ?? 1;
+}
+
+/**
+ * Blend every available signal into the final 0-1 score.
+ *
+ * Accepts { localScore, textScore, visionScore, priceScore, verdict }; any
+ * missing score is skipped. Without a vision score this reduces to the old
+ * pre-vision blend (text 0.6 / local 0.4), so early rows keep their meaning.
+ */
+export function composeFinalScore({ localScore, textScore, visionScore, priceScore, verdict } = {}) {
+  let total = 0;
+  let weightUsed = 0;
+  for (const [key, weight] of Object.entries(FINAL_WEIGHTS)) {
+    const value = Number(key === "vision" ? visionScore : key === "text" ? textScore : key === "local" ? localScore : priceScore);
+    if (!Number.isFinite(value)) continue;
+    total += value * weight;
+    weightUsed += weight;
+  }
+  if (!weightUsed) return null;
+  const base = total / weightUsed;
+  const adjusted = base * verdictAdjustment(verdict);
+  return Math.max(0, Math.min(1, adjusted));
+}
+
+/**
+ * Parse a marketplace price string into a bare number.
+ *
+ * Handles German formatting ("1.299,00 €", "EUR 12,99"), English ("$29.99",
+ * "1,299.00") and plain numbers. Currency is irrelevant — callers only ever
+ * compare two prices from the same listing set. Returns null when no number
+ * can be recovered.
+ */
+export function parsePriceNumber(text) {
+  const raw = String(text ?? "").replace(/\s|\u00a0/g, "");
+  const match = raw.match(/-?\d[\d.,]*/);
+  if (!match) return null;
+  let digits = match[0];
+  const lastComma = digits.lastIndexOf(",");
+  const lastDot = digits.lastIndexOf(".");
+  if (lastComma > lastDot) {
+    // 1.299,00 -> German: dots are thousands, comma is the decimal mark.
+    digits = digits.replace(/\./g, "").replace(",", ".");
+  } else if (lastDot > lastComma) {
+    // 1,299.00 -> English: commas are thousands.
+    digits = digits.replace(/,/g, "");
+  } else {
+    digits = digits.replace(/,/g, "");
+  }
+  const value = Number(digits);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * Price agreement in 0-1. Equal prices score 1; the score decays smoothly as
+ * the relative gap grows, so a 20% gap stays high (~0.55) while the usual
+ * "completely different product" 3x gap decays to near zero.
+ */
+export function priceScore(referencePrice, candidatePrice) {
+  const reference = typeof referencePrice === "number" ? referencePrice : parsePriceNumber(referencePrice);
+  const candidate = typeof candidatePrice === "number" ? candidatePrice : parsePriceNumber(candidatePrice);
+  if (!Number.isFinite(reference) || reference <= 0 || !Number.isFinite(candidate) || candidate <= 0) return null;
+  const gap = Math.abs(reference - candidate) / Math.max(reference, candidate);
+  return Math.exp(-3 * gap);
+}

@@ -168,8 +168,8 @@ function workbookFiles(rows) {
 export function buildXlsx(items, meta = {}) {
   if (meta.priceOnly) return buildPriceOnlyXlsx(items, meta);
   const headers = [
-    "排名", "标题", "价格", "模型判断", "综合相似度", "标题关键词匹配",
-    "产品类型", "核心功能", "外形", "结构", "材质", "成本", "本地初筛", "识别说明",
+    "排名", "标题", "价格", "模型判断", "综合相似度", "视觉综合", "标题关键词匹配", "价格相似度",
+    "产品类型", "核心功能", "品牌标识", "外形", "结构", "材质", "成本", "本地初筛", "识别说明",
     "商品链接", "图片链接", "卖家", "运费", "商品状态", "关键词", "采集时间"
   ];
   const percent = (value) => (Number.isFinite(value) ? Math.round(value * 100) : "");
@@ -179,9 +179,12 @@ export function buildXlsx(items, meta = {}) {
     item.price,
     item.verdict || (item.error ? "识别失败" : ""),
     percent(item.finalScore),
+    percent(item.visionScore),
     percent(item.textScore),
+    percent(item.priceScore),
     percent(item.scores?.productType),
     percent(item.scores?.function),
+    percent(item.scores?.identity),
     percent(item.scores?.shape),
     percent(item.scores?.structure),
     percent(item.scores?.material),
